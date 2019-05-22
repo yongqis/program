@@ -112,7 +112,7 @@ venv.bak/
 # mypy
 .mypy_cache/
 
-.gitignore
+
 .idea/
 ff.py
 info
