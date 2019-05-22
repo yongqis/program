@@ -1,0 +1,7 @@
+
+首先运行export_build_gallery_graph.py导出模型frozen_build_gallery_graph.pb
+然后运行retrieval_build_gallery.py使用导出的模型，对图像检索数据集中的每个图片进行embedding和label转换，保存为pkl文件
+
+首先运行export_inference_graph.py导出模型frozen_inference_graph.pb
+然后运行retrieval_eval.py使用导出的模型进行检索和评估
+
