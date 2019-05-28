@@ -266,7 +266,7 @@ def create_model_fn(detection_model_fn, configs, hparams):
                         include_global_step=False)
                 tf.train.init_from_checkpoint(train_config.fine_tune_checkpoint, available_var_map)
 
-        # 4.total loss and build optimizer--为什么eval也需要loss和optimizer?
+        # 4.total loss and build optimizer--eval需要loss_dict和optimizer_summary_vars
         if mode in (tf.estimator.ModeKeys.TRAIN, tf.estimator.ModeKeys.EVAL):
             losses_dict = detection_model.loss(prediction_dict, features[fields.InputDataFields.true_image_shape])
             losses = [loss_tensor for loss_tensor in losses_dict.values()]

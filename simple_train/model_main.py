@@ -8,8 +8,8 @@ from absl import flags
 
 import tensorflow as tf
 
-from object_detection.simple import model_hparams
-from object_detection.simple import model_lib
+from simple_train import model_hparams
+from simple_train import model_lib
 
 flags.DEFINE_string('model_dir', None, 'Path to output model, event and checkpoint files directory.')
 flags.DEFINE_string('pipeline_config_path', None, 'Path to pipeline config file.')
@@ -28,14 +28,25 @@ def main(unused_argv):
     2、删除eval on train data相关语句
     3、eval_input_fn 只有一个，不再是多个组成的list
     4、删除train_steps参数，可以从config内获取相应数据
-    待解决问题：
-    1、理清参数加载的相关内容：
-        1.model_fn中tf.train.init_from_checkpoint()和 tf.estimator.RunConfig() 两者的加载功能怎样解决冲突
+
+    已解决问题：
+    首先弄清tf.estimator.Estimator()对象在train/eval/predict时，是运行的
+    其内部使用tf.train.MonitorSession()了来创建一个ChiefSessionCreator，list of hook
+    创建会话后，首先加载model_dir内的ckpt模型，如果成功就不再执行初始化操作init_op()
+    最后开始sess.run()管理计算图
+    1、参数加载的相关内容：
+        1.model_fn中tf.train.init_from_checkpoint()和 tf.estimator.RunConfig() 两者的加载参数时怎样解决冲突
+        答：在构建计算图时，定义了tf.train.init_from_checkpoint()，在会话run init_op时，覆盖（override）全局初始化操作加载参数
         2.predict和eval时参数如何加载
+        答：从model_dir
         3.继续训练时是否会加载global_step
-    2、input_fn的高级多线程操作：
+        答：从model_dir加载参数时，会加载global_step
+    待解决问题：
+    1、input_fn的高级多线程操作：
         1.tf.data的文件list多线程
         2.tf.dataset的apply()函数
+    2、eval时exporter对象的实现
+    3、深入理解tf.train.MonitorSession()/hook/scaffold
     """
     flags.mark_flag_as_required('model_dir')
     flags.mark_flag_as_required('pipeline_config_path')
@@ -46,9 +57,8 @@ def main(unused_argv):
         run_config=config,
         hparams=model_hparams.create_hparams(FLAGS.hparams_overrides),
         pipeline_config_path=FLAGS.pipeline_config_path,
-        sample_1_of_n_eval_examples=FLAGS.sample_1_of_n_eval_examples,
-        sample_1_of_n_eval_on_train_examples=FLAGS.sample_1_of_n_eval_on_train_examples)
-    # 单独提取数据
+        sample_1_of_n_eval_examples=FLAGS.sample_1_of_n_eval_examples)
+
     estimator = train_and_eval_dict['estimator']
     train_input_fn = train_and_eval_dict['train_input_fn']
     eval_input_fn = train_and_eval_dict['eval_input_fn']
