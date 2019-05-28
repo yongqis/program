@@ -44,7 +44,7 @@ class BoxCoder(object):
   """Abstract base class for box coder."""
   __metaclass__ = ABCMeta
 
-  @abstractmethod
+  @abstractproperty
   def code_size(self):
     """Return the size of each code.
 

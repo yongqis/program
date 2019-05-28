@@ -1,17 +1,3 @@
-# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
 """Faster R-CNN meta-architecture definition.
 
 General tensorflow implementation of Faster R-CNN detection models.
@@ -708,38 +694,6 @@ class FasterRCNNMetaArch(model.DetectionModel):
             return (self._feature_extractor.preprocess(resized_inputs),
                     true_image_shapes)
 
-    def _compute_clip_window(self, image_shapes):
-        """Computes clip window for non max suppression based on image shapes.
-
-        This function assumes that the clip window's left top corner is at (0, 0).
-
-        Args:
-          image_shapes: A 2-D int32 tensor of shape [batch_size, 3] containing
-          shapes of images in the batch. Each row represents [height, width,
-          channels] of an image.
-
-        Returns:
-          A 2-D float32 tensor of shape [batch_size, 4] containing the clip window
-          for each image in the form [ymin, xmin, ymax, xmax].
-        """
-        clip_heights = image_shapes[:, 0]
-        clip_widths = image_shapes[:, 1]
-        clip_window = tf.to_float(tf.stack([tf.zeros_like(clip_heights),
-                                            tf.zeros_like(clip_heights),
-                                            clip_heights, clip_widths], axis=1))
-        return clip_window
-
-    def _proposal_postprocess(self, rpn_box_encodings,
-                              rpn_objectness_predictions_with_background, anchors,
-                              image_shape, true_image_shapes):
-        """Wraps over FasterRCNNMetaArch._postprocess_rpn()."""
-        image_shape_2d = self._image_batch_shape_2d(image_shape)
-        proposal_boxes_normalized, _, num_proposals, _, _ = \
-            self._postprocess_rpn(
-                rpn_box_encodings, rpn_objectness_predictions_with_background,
-                anchors, image_shape_2d, true_image_shapes)
-        return proposal_boxes_normalized, num_proposals
-
     def predict(self, preprocessed_inputs, true_image_shapes):
         """Predicts unpostprocessed tensors from input tensor.
 
@@ -872,6 +826,7 @@ class FasterRCNNMetaArch(model.DetectionModel):
         """
         (rpn_box_predictor_features, rpn_features_to_crop, anchors_boxlist,
          image_shape) = self._extract_rpn_feature_maps(preprocessed_inputs)
+
         (rpn_box_encodings, rpn_objectness_predictions_with_background
          ) = self._predict_rpn_proposals(rpn_box_predictor_features)
 
@@ -879,6 +834,8 @@ class FasterRCNNMetaArch(model.DetectionModel):
         # the image window at training time and clipping at inference time.
         clip_window = tf.to_float(tf.stack([0, 0, image_shape[1], image_shape[2]]))
         if self._is_training:
+            # 按照原论文，应该直接执行else内的语句--删除越界的anchor以及对应的预测结果，
+            # 但是 这里提供了另一个选择，即，保留anchor，但是修改anchor到图片的边界
             if self.clip_anchors_to_image:
                 anchors_boxlist = box_list_ops.clip_to_window(
                     anchors_boxlist, clip_window, filter_nonoverlapping=False)
@@ -894,38 +851,159 @@ class FasterRCNNMetaArch(model.DetectionModel):
 
         self._anchors = anchors_boxlist
         prediction_dict = {
-            'rpn_box_predictor_features':
-                rpn_box_predictor_features,
-            'rpn_features_to_crop':
-                rpn_features_to_crop,
-            'image_shape':
-                image_shape,
-            'rpn_box_encodings':
-                rpn_box_encodings,
-            'rpn_objectness_predictions_with_background':
-                rpn_objectness_predictions_with_background,
-            'anchors':
-                anchors_boxlist.data['boxes'],
+            'image_shape': image_shape,  # resize后的图像shape
+            'anchors': anchors_boxlist.data['boxes'],  # boxlist.data是一个字典，此处返回一个[num_anchor,4]tensor
+            'rpn_box_encodings': rpn_box_encodings,
+            'rpn_features_to_crop': rpn_features_to_crop,  # 基础网络的卷积结果
+            'rpn_box_predictor_features': rpn_box_predictor_features,  # RPN部分继续卷积的结果
+            'rpn_objectness_predictions_with_background': rpn_objectness_predictions_with_background,
         }
         return prediction_dict
 
-    def _image_batch_shape_2d(self, image_batch_shape_1d):
-        """Takes a 1-D image batch shape tensor and converts it to a 2-D tensor.
+    def _extract_rpn_feature_maps(self, preprocessed_inputs):
+        """Extracts RPN features.
 
-        Example:
-        If 1-D image batch shape tensor is [2, 300, 300, 3]. The corresponding 2-D
-        image batch tensor would be [[300, 300, 3], [300, 300, 3]]
+        This function extracts two feature maps: a feature map to be directly
+        fed to a box predictor (to predict location and objectness scores for
+        proposals) and a feature map from which to crop regions which will then
+        be sent to the second stage box classifier.
 
         Args:
-          image_batch_shape_1d: 1-D tensor of the form [batch_size, height,
-            width, channels].
+          preprocessed_inputs: a [batch, height, width, channels] image tensor.
 
         Returns:
-          image_batch_shape_2d: 2-D tensor of shape [batch_size, 3] were each row is
-            of the form [height, width, channels].
+          rpn_box_predictor_features: A 4-D float32 tensor with shape
+            [batch, height, width, depth] to be used for predicting proposal boxes
+            and corresponding objectness scores.
+          rpn_features_to_crop: A 4-D float32 tensor with shape
+            [batch, height, width, depth] representing image features to crop using
+            the proposals boxes.
+          anchors: A BoxList representing anchors (for the RPN) in
+            absolute coordinates.
+          image_shape: A 1-D tensor representing the input image shape.
         """
-        return tf.tile(tf.expand_dims(image_batch_shape_1d[1:], 0),
-                       [image_batch_shape_1d[0], 1])
+        # 1
+        image_shape = tf.shape(preprocessed_inputs)
+        # 2
+        rpn_features_to_crop, self.endpoints = self._extract_proposal_features(preprocessed_inputs)
+        # 3
+        feature_map_shape = tf.shape(rpn_features_to_crop)
+        anchors = box_list_ops.concatenate(
+            self._first_stage_anchor_generator.generate([(feature_map_shape[1], feature_map_shape[2])]))
+        # 4
+        rpn_box_predictor_features = (self._first_stage_box_predictor_first_conv(rpn_features_to_crop))
+
+        return rpn_box_predictor_features, rpn_features_to_crop, anchors, image_shape
+
+    def _extract_proposal_features(self, preprocessed_inputs):
+        # 使用keras版本的基础网络时，没有初始化，故先初始化
+        if self._feature_extractor_for_proposal_features == _UNINITIALIZED_FEATURE_EXTRACTOR:
+            self._feature_extractor_for_proposal_features = (
+                self._feature_extractor.get_proposal_feature_extractor_model(
+                    name=self.first_stage_feature_extractor_scope))
+        # 使用keras版本的基础网络提取特征
+        if self._feature_extractor_for_proposal_features:
+            proposal_features = (self._feature_extractor_for_proposal_features(preprocessed_inputs), {})
+        # 使用tf版的基础网络提取特征
+        else:
+            proposal_features = (
+                self._feature_extractor.extract_proposal_features(
+                    preprocessed_inputs,
+                    scope=self.first_stage_feature_extractor_scope))
+        # prposal_features有两个元素，最后一层的节点，和所有层节点的字典
+        return proposal_features
+
+    def _predict_rpn_proposals(self, rpn_box_predictor_features):
+        """Adds box predictors to RPN feature map to predict proposals.
+
+        Note resulting tensors will not have been postprocessed.
+
+        Args:
+          rpn_box_predictor_features: A 4-D float32 tensor with shape
+            [batch, height, width, depth] to be used for predicting proposal boxes
+            and corresponding objectness scores.
+
+        Returns:
+          box_encodings: 3-D float tensor of shape
+            [batch_size, num_anchors, self._box_coder.code_size] containing
+            predicted boxes.
+          objectness_predictions_with_background: 3-D float tensor of shape
+            [batch_size, num_anchors, 2] containing class
+            predictions (logits) for each of the anchors.  Note that this
+            tensor *includes* background class predictions (at class index 0).
+
+        Raises:
+          RuntimeError: if the anchor generator generates anchors corresponding to
+            multiple feature maps.  We currently assume that a single feature map
+            is generated for the RPN.
+        """
+        num_anchors_per_location = (
+            self._first_stage_anchor_generator.num_anchors_per_location())
+        if len(num_anchors_per_location) != 1:
+            raise RuntimeError('anchor_generator is expected to generate anchors '
+                               'corresponding to a single feature map.')
+
+        if self._first_stage_box_predictor.is_keras_model:
+            box_predictions = self._first_stage_box_predictor(
+                [rpn_box_predictor_features])
+        else:
+            box_predictions = self._first_stage_box_predictor.predict(
+                [rpn_box_predictor_features],
+                num_anchors_per_location,
+                scope=self.first_stage_box_predictor_scope)
+
+        box_encodings = tf.concat(box_predictions[box_predictor.BOX_ENCODINGS], axis=1)
+        objectness_predictions_with_background = tf.concat(
+            box_predictions[box_predictor.CLASS_PREDICTIONS_WITH_BACKGROUND], xis=1)
+        return tf.squeeze(box_encodings, axis=2), objectness_predictions_with_background
+
+    def _remove_invalid_anchors_and_predictions(self, box_encodings,
+                                                objectness_predictions_with_background,
+                                                anchors_boxlist,
+                                                clip_window):
+        """Removes anchors that (partially) fall outside an image.
+
+        Also removes associated box encodings and objectness predictions.
+
+        Args:
+          box_encodings: 3-D float tensor of shape
+            [batch_size, num_anchors, self._box_coder.code_size] containing
+            predicted boxes.
+          objectness_predictions_with_background: 3-D float tensor of shape
+            [batch_size, num_anchors, 2] containing class
+            predictions (logits) for each of the anchors.  Note that this
+            tensor *includes* background class predictions (at class index 0).
+          anchors_boxlist: A BoxList representing num_anchors anchors (for the RPN)
+            in absolute coordinates.
+          clip_window: a 1-D tensor representing the [ymin, xmin, ymax, xmax]
+            extent of the window to clip/prune to.
+
+        Returns:
+          box_encodings: 4-D float tensor of shape
+            [batch_size, num_valid_anchors, self._box_coder.code_size] containing
+            predicted boxes, where num_valid_anchors <= num_anchors
+          objectness_predictions_with_background: 2-D float tensor of shape
+            [batch_size, num_valid_anchors, 2] containing class
+            predictions (logits) for each of the anchors, where
+            num_valid_anchors <= num_anchors.  Note that this
+            tensor *includes* background class predictions (at class index 0).
+          anchors: A BoxList representing num_valid_anchors anchors (for the RPN) in
+            absolute coordinates.
+        """
+        pruned_anchors_boxlist, keep_indices = box_list_ops.prune_outside_window(
+            anchors_boxlist, clip_window)
+
+        def _batch_gather_kept_indices(predictions_tensor):
+            return shape_utils.static_or_dynamic_map_fn(
+                functools.partial(tf.gather, indices=keep_indices),
+                elems=predictions_tensor,
+                dtype=tf.float32,
+                parallel_iterations=self._parallel_iterations,
+                back_prop=True)
+
+        return (_batch_gather_kept_indices(box_encodings),
+                _batch_gather_kept_indices(objectness_predictions_with_background),
+                pruned_anchors_boxlist)
 
     def _predict_second_stage(self, rpn_box_encodings,
                               rpn_objectness_predictions_with_background,
@@ -993,6 +1071,35 @@ class FasterRCNNMetaArch(model.DetectionModel):
                                                image_shape)
         prediction_dict['num_proposals'] = num_proposals
         return prediction_dict
+
+    def _proposal_postprocess(self, rpn_box_encodings,
+                              rpn_objectness_predictions_with_background, anchors,
+                              image_shape, true_image_shapes):
+        """Wraps over FasterRCNNMetaArch._postprocess_rpn()."""
+        image_shape_2d = self._image_batch_shape_2d(image_shape)
+        proposal_boxes_normalized, _, num_proposals, _, _ = \
+            self._postprocess_rpn(
+                rpn_box_encodings, rpn_objectness_predictions_with_background,
+                anchors, image_shape_2d, true_image_shapes)
+        return proposal_boxes_normalized, num_proposals
+
+    def _image_batch_shape_2d(self, image_batch_shape_1d):
+        """Takes a 1-D image batch shape tensor and converts it to a 2-D tensor.
+
+        Example:
+        If 1-D image batch shape tensor is [2, 300, 300, 3]. The corresponding 2-D
+        image batch tensor would be [[300, 300, 3], [300, 300, 3]]
+
+        Args:
+          image_batch_shape_1d: 1-D tensor of the form [batch_size, height,
+            width, channels].
+
+        Returns:
+          image_batch_shape_2d: 2-D tensor of shape [batch_size, 3] were each row is
+            of the form [height, width, channels].
+        """
+        return tf.tile(tf.expand_dims(image_batch_shape_1d[1:], 0),
+                       [image_batch_shape_1d[0], 1])
 
     def _box_prediction(self, rpn_features_to_crop, proposal_boxes_normalized,
                         image_shape):
@@ -1221,173 +1328,6 @@ class FasterRCNNMetaArch(model.DetectionModel):
         gather_idx = tf.range(k) * num_classes + classes
         return tf.gather(instance_masks, gather_idx)
 
-    def _extract_rpn_feature_maps(self, preprocessed_inputs):
-        """Extracts RPN features.
-
-        This function extracts two feature maps: a feature map to be directly
-        fed to a box predictor (to predict location and objectness scores for
-        proposals) and a feature map from which to crop regions which will then
-        be sent to the second stage box classifier.
-
-        Args:
-          preprocessed_inputs: a [batch, height, width, channels] image tensor.
-
-        Returns:
-          rpn_box_predictor_features: A 4-D float32 tensor with shape
-            [batch, height, width, depth] to be used for predicting proposal boxes
-            and corresponding objectness scores.
-          rpn_features_to_crop: A 4-D float32 tensor with shape
-            [batch, height, width, depth] representing image features to crop using
-            the proposals boxes.
-          anchors: A BoxList representing anchors (for the RPN) in
-            absolute coordinates.
-          image_shape: A 1-D tensor representing the input image shape.
-        """
-        image_shape = tf.shape(preprocessed_inputs)
-
-        rpn_features_to_crop, self.endpoints = self._extract_proposal_features(
-            preprocessed_inputs)
-
-        feature_map_shape = tf.shape(rpn_features_to_crop)
-        anchors = box_list_ops.concatenate(
-            self._first_stage_anchor_generator.generate([(feature_map_shape[1],
-                                                          feature_map_shape[2])]))
-        rpn_box_predictor_features = (
-            self._first_stage_box_predictor_first_conv(rpn_features_to_crop))
-        return (rpn_box_predictor_features, rpn_features_to_crop,
-                anchors, image_shape)
-
-    def _extract_proposal_features(self, preprocessed_inputs):
-        if self._feature_extractor_for_proposal_features == (
-                _UNINITIALIZED_FEATURE_EXTRACTOR):
-            self._feature_extractor_for_proposal_features = (
-                self._feature_extractor.get_proposal_feature_extractor_model(
-                    name=self.first_stage_feature_extractor_scope))
-        if self._feature_extractor_for_proposal_features:
-            proposal_features = (
-                self._feature_extractor_for_proposal_features(preprocessed_inputs),
-                {})
-        else:
-            proposal_features = (
-                self._feature_extractor.extract_proposal_features(
-                    preprocessed_inputs,
-                    scope=self.first_stage_feature_extractor_scope))
-        return proposal_features
-
-    def _predict_rpn_proposals(self, rpn_box_predictor_features):
-        """Adds box predictors to RPN feature map to predict proposals.
-
-        Note resulting tensors will not have been postprocessed.
-
-        Args:
-          rpn_box_predictor_features: A 4-D float32 tensor with shape
-            [batch, height, width, depth] to be used for predicting proposal boxes
-            and corresponding objectness scores.
-
-        Returns:
-          box_encodings: 3-D float tensor of shape
-            [batch_size, num_anchors, self._box_coder.code_size] containing
-            predicted boxes.
-          objectness_predictions_with_background: 3-D float tensor of shape
-            [batch_size, num_anchors, 2] containing class
-            predictions (logits) for each of the anchors.  Note that this
-            tensor *includes* background class predictions (at class index 0).
-
-        Raises:
-          RuntimeError: if the anchor generator generates anchors corresponding to
-            multiple feature maps.  We currently assume that a single feature map
-            is generated for the RPN.
-        """
-        num_anchors_per_location = (
-            self._first_stage_anchor_generator.num_anchors_per_location())
-        if len(num_anchors_per_location) != 1:
-            raise RuntimeError('anchor_generator is expected to generate anchors '
-                               'corresponding to a single feature map.')
-        if self._first_stage_box_predictor.is_keras_model:
-            box_predictions = self._first_stage_box_predictor(
-                [rpn_box_predictor_features])
-        else:
-            box_predictions = self._first_stage_box_predictor.predict(
-                [rpn_box_predictor_features],
-                num_anchors_per_location,
-                scope=self.first_stage_box_predictor_scope)
-
-        box_encodings = tf.concat(
-            box_predictions[box_predictor.BOX_ENCODINGS], axis=1)
-        objectness_predictions_with_background = tf.concat(
-            box_predictions[box_predictor.CLASS_PREDICTIONS_WITH_BACKGROUND],
-            axis=1)
-        return (tf.squeeze(box_encodings, axis=2),
-                objectness_predictions_with_background)
-
-    def _remove_invalid_anchors_and_predictions(
-            self,
-            box_encodings,
-            objectness_predictions_with_background,
-            anchors_boxlist,
-            clip_window):
-        """Removes anchors that (partially) fall outside an image.
-
-        Also removes associated box encodings and objectness predictions.
-
-        Args:
-          box_encodings: 3-D float tensor of shape
-            [batch_size, num_anchors, self._box_coder.code_size] containing
-            predicted boxes.
-          objectness_predictions_with_background: 3-D float tensor of shape
-            [batch_size, num_anchors, 2] containing class
-            predictions (logits) for each of the anchors.  Note that this
-            tensor *includes* background class predictions (at class index 0).
-          anchors_boxlist: A BoxList representing num_anchors anchors (for the RPN)
-            in absolute coordinates.
-          clip_window: a 1-D tensor representing the [ymin, xmin, ymax, xmax]
-            extent of the window to clip/prune to.
-
-        Returns:
-          box_encodings: 4-D float tensor of shape
-            [batch_size, num_valid_anchors, self._box_coder.code_size] containing
-            predicted boxes, where num_valid_anchors <= num_anchors
-          objectness_predictions_with_background: 2-D float tensor of shape
-            [batch_size, num_valid_anchors, 2] containing class
-            predictions (logits) for each of the anchors, where
-            num_valid_anchors <= num_anchors.  Note that this
-            tensor *includes* background class predictions (at class index 0).
-          anchors: A BoxList representing num_valid_anchors anchors (for the RPN) in
-            absolute coordinates.
-        """
-        pruned_anchors_boxlist, keep_indices = box_list_ops.prune_outside_window(
-            anchors_boxlist, clip_window)
-
-        def _batch_gather_kept_indices(predictions_tensor):
-            return shape_utils.static_or_dynamic_map_fn(
-                functools.partial(tf.gather, indices=keep_indices),
-                elems=predictions_tensor,
-                dtype=tf.float32,
-                parallel_iterations=self._parallel_iterations,
-                back_prop=True)
-
-        return (_batch_gather_kept_indices(box_encodings),
-                _batch_gather_kept_indices(objectness_predictions_with_background),
-                pruned_anchors_boxlist)
-
-    def _flatten_first_two_dimensions(self, inputs):
-        """Flattens `K-d` tensor along batch dimension to be a `(K-1)-d` tensor.
-
-        Converts `inputs` with shape [A, B, ..., depth] into a tensor of shape
-        [A * B, ..., depth].
-
-        Args:
-          inputs: A float tensor with shape [A, B, ..., depth].  Note that the first
-            two and last dimensions must be statically defined.
-        Returns:
-          A float tensor with shape [A * B, ..., depth] (where the first and last
-            dimension are statically defined.
-        """
-        combined_shape = shape_utils.combined_static_and_dynamic_shape(inputs)
-        flattened_shape = tf.stack([combined_shape[0] * combined_shape[1]] +
-                                   combined_shape[2:])
-        return tf.reshape(inputs, flattened_shape)
-
     def postprocess(self, prediction_dict, true_image_shapes):
         """Convert prediction tensors to final detections.
 
@@ -1473,6 +1413,27 @@ class FasterRCNNMetaArch(model.DetectionModel):
             # Post processing is already performed in 3rd stage. We need to transfer
             # postprocessed tensors from `prediction_dict` to `detections_dict`.
             return prediction_dict
+
+    def _compute_clip_window(self, image_shapes):
+        """Computes clip window for non max suppression based on image shapes.
+
+        This function assumes that the clip window's left top corner is at (0, 0).
+
+        Args:
+          image_shapes: A 2-D int32 tensor of shape [batch_size, 3] containing
+          shapes of images in the batch. Each row represents [height, width,
+          channels] of an image.
+
+        Returns:
+          A 2-D float32 tensor of shape [batch_size, 4] containing the clip window
+          for each image in the form [ymin, xmin, ymax, xmax].
+        """
+        clip_heights = image_shapes[:, 0]
+        clip_widths = image_shapes[:, 1]
+        clip_window = tf.to_float(tf.stack([tf.zeros_like(clip_heights),
+                                            tf.zeros_like(clip_heights),
+                                            clip_heights, clip_widths], axis=1))
+        return clip_window
 
     def _add_detection_features_output_node(self, detection_boxes,
                                             rpn_features_to_crop):
@@ -1830,6 +1791,24 @@ class FasterRCNNMetaArch(model.DetectionModel):
                 features_to_crop, proposal_boxes_normalized,
                 [self._initial_crop_size, self._initial_crop_size]))
         return self._maxpool_layer(cropped_regions)
+
+    def _flatten_first_two_dimensions(self, inputs):
+        """Flattens `K-d` tensor along batch dimension to be a `(K-1)-d` tensor.
+
+        Converts `inputs` with shape [A, B, ..., depth] into a tensor of shape
+        [A * B, ..., depth].
+
+        Args:
+          inputs: A float tensor with shape [A, B, ..., depth].  Note that the first
+            two and last dimensions must be statically defined.
+        Returns:
+          A float tensor with shape [A * B, ..., depth] (where the first and last
+            dimension are statically defined.
+        """
+        combined_shape = shape_utils.combined_static_and_dynamic_shape(inputs)
+        flattened_shape = tf.stack([combined_shape[0] * combined_shape[1]] +
+                                   combined_shape[2:])
+        return tf.reshape(inputs, flattened_shape)
 
     def _postprocess_box_classifier(self,
                                     refined_box_encodings,
@@ -2580,7 +2559,7 @@ class FasterRCNNMetaArch(model.DetectionModel):
             checkpoint (with compatible variable names) or to restore from a
             classification checkpoint for initialization prior to training.
             Valid values: `detection`, `classification`. Default 'detection'.
-          load_all_detection_checkpoint_vars: whether to load all variables (when
+           load_all_detection_checkpoint_vars: whether to load all variables (when
              `fine_tune_checkpoint_type` is `detection`). If False, only variables
              within the feature extractor scopes are included. Default False.
 
@@ -2592,7 +2571,8 @@ class FasterRCNNMetaArch(model.DetectionModel):
             nor `detection`.
         """
         if fine_tune_checkpoint_type not in ['detection', 'classification']:
-            raise ValueError('Not supported fine_tune_checkpoint_type: {}'.format(fine_tune_checkpoint_type))
+            raise ValueError('Not supported fine_tune_checkpoint_type: {}'.format(
+                fine_tune_checkpoint_type))
         if fine_tune_checkpoint_type == 'classification':
             return self._feature_extractor.restore_from_classification_checkpoint_fn(
                 self.first_stage_feature_extractor_scope,

@@ -3,7 +3,7 @@ syntax = "proto2";
 package object_detection.protos;
 
 // Message for defining a preprocessing operation on input data.
-// See: //object_detection/core/preprocessor.py
+// See: //third_party/tensorflow_models/object_detection/core/preprocessor.py
 message PreprocessingStep {
   oneof preprocessing_step {
     NormalizeImage normalize_image = 1;
@@ -32,6 +32,10 @@ message PreprocessingStep {
     SSDRandomCropPadFixedAspectRatio ssd_random_crop_pad_fixed_aspect_ratio = 24;
     RandomVerticalFlip random_vertical_flip = 25;
     RandomRotation90 random_rotation90 = 26;
+    RGBtoGray rgb_to_gray = 27;
+    ConvertClassLogitsToSoftmax convert_class_logits_to_softmax = 28;
+    RandomAbsolutePadImage random_absolute_pad_image = 29;
+    RandomSelfConcatImage random_self_concat_image = 30;
   }
 }
 
@@ -153,6 +157,9 @@ message RandomCropImage {
   // value, it is removed from the new image.
   optional float overlap_thresh = 6 [default=0.3];
 
+  // Whether to clip the boxes to the cropped image.
+  optional bool clip_boxes = 8 [default=true];
+
   // Probability of keeping the original image.
   optional float random_coef = 7 [default=0.0];
 }
@@ -161,17 +168,29 @@ message RandomCropImage {
 message RandomPadImage {
   // Minimum dimensions for padded image. If unset, will use original image
   // dimension as a lower bound.
-  optional float min_image_height = 1;
-  optional float min_image_width = 2;
+  optional int32 min_image_height = 1;
+  optional int32 min_image_width = 2;
 
   // Maximum dimensions for padded image. If unset, will use double the original
   // image dimension as a lower bound.
-  optional float max_image_height = 3;
-  optional float max_image_width = 4;
+  optional int32 max_image_height = 3;
+  optional int32 max_image_width = 4;
 
   // Color of the padding. If unset, will pad using average color of the input
   // image.
   repeated float pad_color = 5;
+}
+
+// Randomly adds a padding of size [0, max_height_padding), [0, max_width_padding).
+message RandomAbsolutePadImage {
+  // Height will be padded uniformly at random from [0, max_height_padding).
+  optional int32 max_height_padding = 1;
+  // Width will be padded uniformly at random from [0, max_width_padding).
+  optional int32 max_width_padding = 2;
+
+  // Color of the padding. If unset, will pad using average color of the input
+  // image.
+  repeated float pad_color = 3;
 }
 
 // Randomly crops an image followed by a random pad.
@@ -192,6 +211,9 @@ message RandomCropPadImage {
   // value, it is removed from the new image.
   optional float overlap_thresh = 6 [default=0.3];
 
+  // Whether to clip the boxes to the cropped image.
+  optional bool clip_boxes = 11 [default=true];
+
   // Probability of keeping the original image during the crop operation.
   optional float random_coef = 7 [default=0.0];
 
@@ -202,7 +224,7 @@ message RandomCropPadImage {
   repeated float max_padded_size_ratio = 9;
 
   // Color of the padding. If unset, will pad using average color of the input
-  // image.
+  // image. This field should be of length 3.
   repeated float pad_color = 10;
 }
 
@@ -215,6 +237,9 @@ message RandomCropToAspectRatio {
   // ratio between a cropped bounding box and the original is less than this
   // value, it is removed from the new image.
   optional float overlap_thresh = 2 [default=0.3];
+
+  // Whether to clip the boxes to the cropped image.
+  optional bool clip_boxes = 3 [default=true];
 }
 
 // Randomly adds black square patches to an image.
@@ -232,9 +257,14 @@ message RandomBlackPatches {
 
 // Randomly resizes the image up to [target_height, target_width].
 message RandomResizeMethod {
-  optional float target_height = 1;
-  optional float target_width = 2;
+  optional int32 target_height = 1;
+  optional int32 target_width = 2;
 }
+
+// Converts the RGB image to a grayscale image. This also converts the image
+// depth from 3 to 1, unlike RandomRGBtoGray which does not change the image
+// depth.
+message RGBtoGray {}
 
 // Scales boxes from normalized coordinates to pixel coordinates.
 message ScaleBoxesToPixelCoordinates {
@@ -278,6 +308,9 @@ message SSDRandomCropOperation {
   // Cropped box area ratio must be above this threhold to be kept.
   optional float overlap_thresh = 6;
 
+  // Whether to clip the boxes to the cropped image.
+  optional bool clip_boxes = 8 [default=true];
+
   // Probability a crop operation is skipped.
   optional float random_coef = 7;
 }
@@ -307,6 +340,9 @@ message SSDRandomCropPadOperation {
 
   // Cropped box area ratio must be above this threhold to be kept.
   optional float overlap_thresh = 6;
+
+  // Whether to clip the boxes to the cropped image.
+  optional bool clip_boxes = 13 [default=true];
 
   // Probability a crop operation is skipped.
   optional float random_coef = 7;
@@ -346,6 +382,9 @@ message SSDRandomCropFixedAspectRatioOperation {
   // Cropped box area ratio must be above this threhold to be kept.
   optional float overlap_thresh = 6;
 
+  // Whether to clip the boxes to the cropped image.
+  optional bool clip_boxes = 8 [default=true];
+
   // Probability a crop operation is skipped.
   optional float random_coef = 7;
 }
@@ -380,16 +419,11 @@ message SSDRandomCropPadFixedAspectRatioOperation {
   // Cropped box area ratio must be above this threhold to be kept.
   optional float overlap_thresh = 6;
 
+  // Whether to clip the boxes to the cropped image.
+  optional bool clip_boxes = 8 [default=true];
+
   // Probability a crop operation is skipped.
   optional float random_coef = 7;
-
-  // Min ratio of padded image height and width to the input image's height and
-  // width. Two entries per operation.
-  repeated float min_padded_size_ratio = 8;
-
-  // Max ratio of padded image height and width to the input image's height and
-  // width. Two entries per operation.
-  repeated float max_padded_size_ratio = 9;
 }
 
 // Randomly crops and pads an image to a fixed aspect ratio according to:
@@ -402,4 +436,28 @@ message SSDRandomCropPadFixedAspectRatio {
 
   // Aspect ratio to pad to. This value is used for all crop and pad operations.
   optional float aspect_ratio = 2 [default=1.0];
+
+  // Min ratio of padded image height and width to the input image's height and
+  // width. Two entries per operation.
+  repeated float min_padded_size_ratio = 3;
+
+  // Max ratio of padded image height and width to the input image's height and
+  // width. Two entries per operation.
+  repeated float max_padded_size_ratio = 4;
+}
+
+// Converts class logits to softmax optionally scaling the values by temperature
+// first.
+message ConvertClassLogitsToSoftmax {
+
+  // Scale to use on logits before applying softmax.
+  optional float temperature = 1 [default=1.0];
+}
+
+// Randomly concatenates the image with itself horizontally and/or vertically.
+message RandomSelfConcatImage {
+  // Probability of concatenating the image vertically.
+  optional float concat_vertical_probability = 1 [default = 0.1];
+  // Probability of concatenating the image horizontally.
+  optional float concat_horizontal_probability = 2 [default = 0.1];
 }
