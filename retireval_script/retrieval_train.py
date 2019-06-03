@@ -46,10 +46,10 @@ import json
 import os
 import tensorflow as tf
 
-from object_detection import trainer
-from object_detection.builders import input_reader_builder
-from object_detection.builders import model_builder
-from object_detection.utils import config_util
+from object_detection_updata import trainer
+from object_detection_updata.builders import input_reader_builder
+from object_detection_updata.builders import model_builder
+from object_detection_updata.utils import config_util
 
 tf.logging.set_verbosity(tf.logging.INFO)
 

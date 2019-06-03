@@ -11,23 +11,22 @@ import os
 import tensorflow as tf
 
 from tensorflow.python.util import function_utils
-from object_detection import eval_util
-from object_detection import exporter as exporter_lib
-from object_detection import inputs
-from object_detection.builders import graph_rewriter_builder
-from object_detection.builders import model_builder
-from object_detection.builders import optimizer_builder
-from object_detection.core import standard_fields as fields
-from object_detection.utils import config_util
-from object_detection.utils import label_map_util
-from object_detection.utils import ops
-from object_detection.utils import shape_utils
-from object_detection.utils import variables_helper
-from object_detection.utils import visualization_utils as vis_utils
+from object_detection_updata import eval_util
+from object_detection_updata import exporter as exporter_lib
+from object_detection_updata import inputs
+from object_detection_updata.builders import graph_rewriter_builder
+from object_detection_updata.builders import model_builder
+from object_detection_updata.builders import optimizer_builder
+from object_detection_updata.core import standard_fields as fields
+from object_detection_updata.utils import config_util
+from object_detection_updata.utils import label_map_util
+from object_detection_updata.utils import ops
+from object_detection_updata.utils import shape_utils
+from object_detection_updata.utils import variables_helper
+from object_detection_updata.utils import visualization_utils as vis_utils
 
 
-def _prepare_groundtruth_for_eval(detection_model, class_agnostic,
-                                  max_number_of_boxes):
+def _prepare_groundtruth_for_eval(detection_model, class_agnostic, max_number_of_boxes):
     """Extracts groundtruth data from detection_model and prepares it for eval.
 
     Args:
@@ -121,7 +120,7 @@ def unstack_batch(tensor_dict, unpad_groundtruth_tensors=True):
                              format(unbatched_tensor_dict.keys()))
         unbatched_unpadded_tensor_dict = {}
         # 取交集，得到已经解压过的标准gt域名 unpad_keys
-        unpad_keys = set([
+        unpad_keys = {
             # List of input data fields that are padded along the num_boxes
             # dimension. This list has to be kept in sync with InputDataFields in
             # standard_fields.py.
@@ -134,7 +133,7 @@ def unstack_batch(tensor_dict, unpad_groundtruth_tensors=True):
             fields.InputDataFields.groundtruth_is_crowd,
             fields.InputDataFields.groundtruth_area,
             fields.InputDataFields.groundtruth_weights
-        ]).intersection(set(unbatched_tensor_dict.keys()))
+            }.intersection(set(unbatched_tensor_dict.keys()))
         # 进一步按 num_box解压
         for key in unpad_keys:
             unpadded_tensor_list = []
@@ -290,7 +289,7 @@ def create_model_fn(detection_model_fn, configs, hparams):
             global_step = tf.train.get_or_create_global_step()
             training_optimizer, optimizer_summary_vars = optimizer_builder.build(train_config.optimizer)
 
-        # 5.gradient down
+        # 5.gradient down--train模型0-1-3-4-5步骤
         if mode == tf.estimator.ModeKeys.TRAIN:
             # 梯度冻结-Optionally freeze some layers by setting their gradients to be zero.
             include_variables = (train_config.update_trainable_variables
@@ -323,7 +322,7 @@ def create_model_fn(detection_model_fn, configs, hparams):
                 summaries=summaries,
                 name='')  # Preventing scope prefix on all variables.
 
-        # 6.output
+        # 6.output--predict模式1-2-6步骤
         if mode == tf.estimator.ModeKeys.PREDICT:
             exported_output = exporter_lib.add_output_tensor_nodes(detections)
             export_outputs = {
@@ -331,14 +330,15 @@ def create_model_fn(detection_model_fn, configs, hparams):
                     tf.estimator.export.PredictOutput(exported_output)
             }
 
-        # 7.定义eval_metric_ops和scaffold--scaffold中定义的saver加载滑动平均变量来初始化模型参数
+        # 7.eval_metric_ops和scaffold--eval模式0-1-2-4-7
         eval_metric_ops = None
         scaffold = None
         if mode == tf.estimator.ModeKeys.EVAL:
-            class_agnostic = (fields.DetectionResultFields.detection_classes not in detections)
-            groundtruth = _prepare_groundtruth_for_eval(
-                detection_model, class_agnostic,
-                eval_input_config.max_number_of_boxes)
+            # 第一步得到eval_dict
+            class_agnostic = fields.DetectionResultFields.detection_classes not in detections
+            groundtruth = _prepare_groundtruth_for_eval(detection_model,
+                                                        class_agnostic,
+                                                        eval_input_config.max_number_of_boxes)
 
             use_original_images = fields.InputDataFields.original_image in features
             if use_original_images:
@@ -349,7 +349,7 @@ def create_model_fn(detection_model_fn, configs, hparams):
                 eval_images = features[fields.InputDataFields.image]
                 true_image_shapes = None
                 original_image_spatial_shapes = None
-
+            # 所有预测结果和标注信息组成的dict
             eval_dict = eval_util.result_dict_for_batched_example(
                 eval_images,
                 features[inputs.HASH_KEY],
@@ -359,7 +359,7 @@ def create_model_fn(detection_model_fn, configs, hparams):
                 scale_to_absolute=True,
                 original_image_spatial_shapes=original_image_spatial_shapes,
                 true_image_shapes=true_image_shapes)
-
+            # 第二步 定义vis_metric_ops-可以被EstimSpec调用的eval op，把预测结果和标注信息画在了图片上tf.summary保存
             if class_agnostic:
                 category_index = label_map_util.create_class_agnostic_category_index()
             else:
@@ -378,6 +378,7 @@ def create_model_fn(detection_model_fn, configs, hparams):
             # Eval metrics on a single example.
             eval_metric_ops = eval_util.get_eval_metric_ops_for_evaluators(
                 eval_config, list(category_index.values()), eval_dict)
+
             for loss_key, loss_tensor in iter(losses_dict.items()):
                 eval_metric_ops[loss_key] = tf.metrics.mean(loss_tensor)
             for var in optimizer_summary_vars:
@@ -388,7 +389,7 @@ def create_model_fn(detection_model_fn, configs, hparams):
 
             if eval_config.use_moving_averages:
                 variable_averages = tf.train.ExponentialMovingAverage(0.0)
-                variables_to_restore = variable_averages.variables_to_restore()
+                variables_to_restore = variable_averages.variables_to_restore()  # 返回moving_avg变量的name组成的map dict
                 keep_checkpoint_every_n_hours = train_config.keep_checkpoint_every_n_hours
                 saver = tf.train.Saver(
                     variables_to_restore,

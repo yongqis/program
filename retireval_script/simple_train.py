@@ -3,7 +3,7 @@ import json
 import functools
 import tensorflow as tf
 
-from object_detection.utils import config_util
+from object_detection_updata.utils import config_util
 
 tf.logging.set_verbosity(tf.logging.INFO)
 

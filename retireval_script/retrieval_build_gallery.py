@@ -5,7 +5,7 @@ import numpy as np
 import cv2 as cv
 import tensorflow as tf
 from sklearn.externals import joblib
-from object_detection.utils import label_map_util
+from object_detection_updata.utils import label_map_util
 
 
 def main(pb_model_path, gallery_dir, label_map_path, save_path):

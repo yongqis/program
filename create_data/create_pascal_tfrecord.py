@@ -20,8 +20,8 @@ import hashlib
 import tensorflow as tf
 import xml.etree.ElementTree as ET
 
-from object_detection.utils import dataset_util
-from object_detection.utils import label_map_util
+from object_detection_updata.utils import dataset_util
+from object_detection_updata.utils import label_map_util
 
 
 flags = tf.flags

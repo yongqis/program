@@ -4,11 +4,11 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from util.input_fn import train_input_fn
 from util.update_util import clip_gradient_norms
-from object_detection.utils import config_util
-from object_detection.utils import ops as util_ops
-from object_detection.utils import variables_helper
-from object_detection.utils.visualization_utils import visualize_boxes_and_labels_on_image_array
-from object_detection.builders import model_builder
+from object_detection_updata.utils import config_util
+from object_detection_updata.utils import ops as util_ops
+from object_detection_updata.utils import variables_helper
+from object_detection_updata.utils.visualization_utils import visualize_boxes_and_labels_on_image_array
+from object_detection_updata.builders import model_builder
 
 
 pipeline_config_path = '/home/hnu/workspace/syq/retrieval/data/faster_rcnn_inception_resnet_v2.config'

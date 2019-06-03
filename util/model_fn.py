@@ -3,11 +3,11 @@ import numpy as np
 import tensorflow as tf
 from util.triplet_loss import batch_all_triplet_loss, batch_hard_triplet_loss
 from util.update_util import clip_gradient_norms
-from object_detection.utils import config_util
-from object_detection.utils import ops as util_ops
-from object_detection.utils import variables_helper
-from object_detection.builders import model_builder
-from object_detection.builders import optimizer_builder
+from object_detection_updata.utils import config_util
+from object_detection_updata.utils import ops as util_ops
+from object_detection_updata.utils import variables_helper
+from object_detection_updata.builders import model_builder
+from object_detection_updata.builders import optimizer_builder
 
 
 def model_fn(images, labels, mode, params):

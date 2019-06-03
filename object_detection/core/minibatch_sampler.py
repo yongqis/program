@@ -80,11 +80,10 @@ class MinibatchSampler(object):
     indices = tf.where(indicator)
     indices = tf.random_shuffle(indices)
     indices = tf.reshape(indices, [-1])
-
+    #
     num_samples = tf.minimum(tf.size(indices), num_samples)
     selected_indices = tf.slice(indices, [0], tf.reshape(num_samples, [1]))
-
-    selected_indicator = ops.indices_to_dense_vector(selected_indices,
-                                                     tf.shape(indicator)[0])
+    # 保持输入indicator的形状和顺序，未被采样的位置为0
+    selected_indicator = ops.indices_to_dense_vector(selected_indices, tf.shape(indicator)[0])
 
     return tf.equal(selected_indicator, 1)

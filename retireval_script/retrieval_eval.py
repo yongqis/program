@@ -5,7 +5,7 @@ import cv2 as cv
 import numpy as np
 import tensorflow as tf
 import retireval_script.retrieval_utils as tool
-from object_detection.utils import label_map_util
+from object_detection_updata.utils import label_map_util
 
 
 def main(pb_model_path, label_path, gt_xml_dir, test_dir, gallery_path, sim_threshold=0.6, top_k=1):

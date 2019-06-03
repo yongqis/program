@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 import scipy.spatial.distance as distance
 
 from sklearn.externals import joblib
-from object_detection.utils import visualization_utils as vis_utils
+from object_detection_updata.utils import visualization_utils as vis_utils
 
 
 def build_inference_graph(inference_graph_path):

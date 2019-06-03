@@ -5,8 +5,8 @@ import logging
 import tempfile
 import tensorflow as tf
 
-from object_detection.protos import pipeline_pb2
-from object_detection.builders import model_builder
+from object_detection_updata.protos import pipeline_pb2
+from object_detection_updata.builders import model_builder
 
 from google.protobuf import text_format
 

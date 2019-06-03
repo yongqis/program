@@ -42,24 +42,25 @@ class GridAnchorGenerator(anchor_generator.AnchorGenerator):
           scales: a list of (float) scales, default=(0.5, 1.0, 2.0)
           aspect_ratios: a list of (float) aspect ratios, default=(0.5, 1.0, 2.0)
           base_anchor_size: base anchor size as height, width (
-                            (length-2 float32 list or tensor, default=[256, 256])
+                            (length-2 float32 list, default=[256, 256])
           anchor_stride: difference in centers between base anchors for adjacent
-                         grid positions (length-2 float32 list or tensor,
-                         default=[16, 16])
+                         grid positions (length-2 float32 list, default=[16, 16])
           anchor_offset: center of the anchor with scale and aspect ratio 1 for the
                          upper left element of the grid, this should be zero for
                          feature networks with only VALID padding and even receptive
                          field size, but may need additional calculation if other
-                         padding is used (length-2 float32 list or tensor,
-                         default=[0, 0])
+                         padding is used (length-2 float32 tensor, default=[0, 0])
         """
         # Handle argument defaults
         if base_anchor_size is None:
             base_anchor_size = [256, 256]
+        base_anchor_size = tf.constant(base_anchor_size, tf.float32)
         if anchor_stride is None:
             anchor_stride = [16, 16]
+        anchor_stride = tf.constant(anchor_stride, dtype=tf.float32)
         if anchor_offset is None:
             anchor_offset = [0, 0]
+        anchor_offset = tf.constant(anchor_offset, dtype=tf.float32)
 
         self._scales = scales
         self._aspect_ratios = aspect_ratios
@@ -79,7 +80,7 @@ class GridAnchorGenerator(anchor_generator.AnchorGenerator):
         """
         return [len(self._scales) * len(self._aspect_ratios)]
 
-    def _generate(self, feature_map_shape_list):
+    def _generate(self, feature_map_shape_list, **params):
         """Generates a collection of bounding boxes to be used as anchors.
 
         Args:
@@ -90,46 +91,38 @@ class GridAnchorGenerator(anchor_generator.AnchorGenerator):
             allowed.
 
         Returns:
-          boxes_list: a list of BoxLists each holding anchor boxes corresponding to
-            the input feature map shapes.
-
+          boxes: a BoxList holding a collection of N anchor boxes
         Raises:
           ValueError: if feature_map_shape_list, box_specs_list do not have the same
             length.
           ValueError: if feature_map_shape_list does not consist of pairs of
             integers
         """
-        if not (isinstance(feature_map_shape_list, list) and len(feature_map_shape_list) == 1):
+        if not (isinstance(feature_map_shape_list, list)
+                and len(feature_map_shape_list) == 1):
             raise ValueError('feature_map_shape_list must be a list of length 1.')
         if not all([isinstance(list_item, tuple) and len(list_item) == 2
                     for list_item in feature_map_shape_list]):
             raise ValueError('feature_map_shape_list must be a list of pairs.')
-        self._base_anchor_size = tf.to_float(tf.convert_to_tensor(
-            self._base_anchor_size))
-        self._anchor_stride = tf.to_float(tf.convert_to_tensor(
-            self._anchor_stride))
-        self._anchor_offset = tf.to_float(tf.convert_to_tensor(
-            self._anchor_offset))
-
         grid_height, grid_width = feature_map_shape_list[0]
+
+        # 搞明白
+        # shape=(3,3)
         scales_grid, aspect_ratios_grid = ops.meshgrid(self._scales,
                                                        self._aspect_ratios)
+        # tf.reshape(,-1),做了展平操作，shape=(9,)
         scales_grid = tf.reshape(scales_grid, [-1])
         aspect_ratios_grid = tf.reshape(aspect_ratios_grid, [-1])
-        anchors = tile_anchors(grid_height,
-                               grid_width,
-                               scales_grid,
-                               aspect_ratios_grid,
-                               self._base_anchor_size,
-                               self._anchor_stride,
-                               self._anchor_offset)
 
-        num_anchors = anchors.num_boxes_static()
-        if num_anchors is None:
-            num_anchors = anchors.num_boxes()
-        anchor_indices = tf.zeros([num_anchors])
-        anchors.add_field('feature_map_index', anchor_indices)
-        return [anchors]
+        # 返回一个BoxList class 包含了所有的anchor四个坐标信息(resize后的原图)
+        # 以为feature_map扩大16倍(anchor_stride)为基准 中心坐标间隔为16,  边长以256为基准
+        return tile_anchors(grid_height,
+                            grid_width,
+                            scales_grid,
+                            aspect_ratios_grid,
+                            self._base_anchor_size,
+                            self._anchor_stride,
+                            self._anchor_offset)
 
 
 def tile_anchors(grid_height,
@@ -173,25 +166,36 @@ def tile_anchors(grid_height,
     Returns:
       a BoxList holding a collection of N anchor boxes
     """
-    ratio_sqrts = tf.sqrt(aspect_ratios)
+    # 以默认值为例
+    # step1 生成边长和中心坐标数据
+    # heights widths shape均为[9,] 且按索引值结成对
+    ratio_sqrts = tf.sqrt(aspect_ratios)  # 计算平方根
     heights = scales / ratio_sqrts * base_anchor_size[0]
     widths = scales * ratio_sqrts * base_anchor_size[1]
-
     # Get a grid of box centers
-    y_centers = tf.to_float(tf.range(grid_height))
+    # 假设grid_height=15, grid_width=10,
+    # y_centers shape [15,] 从0开始,每个值间隔16
+    y_centers = tf.to_float(tf.range(grid_height))  # y_centers是一个序列
     y_centers = y_centers * anchor_stride[0] + anchor_offset[0]
+    # x_centers shape [10,] 从0开始,每个值间隔16
     x_centers = tf.to_float(tf.range(grid_width))
     x_centers = x_centers * anchor_stride[1] + anchor_offset[1]
+    # step2. reshape
+    # x_centers,y_centers 变成相同的shape=(15, 10)
     x_centers, y_centers = ops.meshgrid(x_centers, y_centers)
-
+    # shape = (15, 10, 9)
     widths_grid, x_centers_grid = ops.meshgrid(widths, x_centers)
     heights_grid, y_centers_grid = ops.meshgrid(heights, y_centers)
+    # shape=(15, 10, 9, 2)
     bbox_centers = tf.stack([y_centers_grid, x_centers_grid], axis=3)
     bbox_sizes = tf.stack([heights_grid, widths_grid], axis=3)
+    # shape=(1350, 2)
     bbox_centers = tf.reshape(bbox_centers, [-1, 2])
     bbox_sizes = tf.reshape(bbox_sizes, [-1, 2])
+    # step3. 值融合 将(中心坐标，长宽)转为两个角点坐标
     bbox_corners = _center_size_bbox_to_corners_bbox(bbox_centers, bbox_sizes)
-    return box_list.BoxList(bbox_corners)
+
+    return box_list.BoxList(bbox_corners)  # 返回一个类, 所有anchor的位置的信息
 
 
 def _center_size_bbox_to_corners_bbox(centers, sizes):
